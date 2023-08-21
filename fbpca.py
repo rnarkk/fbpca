@@ -579,3 +579,181 @@ def eigenn(A, k=6, n_iter=4, l=None):
     # and the corresponding columns of V.
     idx = abs(d).argsort()[-k:][::-1]
     return abs(d[idx]), V[:, idx]
+
+
+def eigens(A, k=6, n_iter=4, l=None):
+    """
+    Eigendecomposition of a SELF-ADJOINT matrix.
+
+    Constructs a nearly optimal rank-k approximation V diag(d) V' to a
+    SELF-ADJOINT matrix A, using n_iter normalized power iterations,
+    with block size l, started with an n x l random matrix, when A is
+    n x n; the reference EGS_ below explains "nearly optimal." k must
+    be a positive integer <= the dimension n of A, n_iter must be a
+    nonnegative integer, and l must be a positive integer >= k.
+
+    The rank-k approximation V diag(d) V' comes in the form of an
+    eigendecomposition -- the columns of V are orthonormal and d is a
+    vector whose entries are real-valued and their absolute values are
+    nonincreasing. V is n x k and len(d) = k, when A is n x n.
+
+    Increasing n_iter or l improves the accuracy of the approximation
+    V diag(d) V'; the reference EGS_ below describes how the accuracy
+    depends on n_iter and l. Please note that even n_iter=1 guarantees
+    superb accuracy, whether or not there is any gap in the singular
+    values of the matrix A being approximated, at least when measuring
+    accuracy as the spectral norm || A - V diag(d) V' || of the matrix
+    A - V diag(d) V' (relative to the spectral norm ||A|| of A).
+
+    Notes
+    -----
+    THE MATRIX A MUST BE SELF-ADJOINT.
+
+    To obtain repeatable results, reset the seed for the pseudorandom
+    number generator.
+
+    The user may ascertain the accuracy of the approximation
+    V diag(d) V' to A by invoking diffsnorms(A, numpy.diag(d), V).
+
+    Parameters
+    ----------
+    A : array_like, shape (n, n)
+        matrix being approximated
+    k : int, optional
+        rank of the approximation being constructed;
+        k must be a positive integer <= the dimension of A, and
+        defaults to 6
+    n_iter : int, optional
+        number of normalized power iterations to conduct;
+        n_iter must be a nonnegative integer, and defaults to 4
+    l : int, optional
+        block size of the normalized power iterations;
+        l must be a positive integer >= k, and defaults to k+2
+
+    Returns
+    -------
+    d : ndarray, shape (k,)
+        vector of length k in the rank-k approximation V diag(d) V'
+        to A, such that its entries are real-valued and their absolute
+        values are nonincreasing
+    V : ndarray, shape (n, k)
+        n x k matrix in the rank-k approximation V diag(d) V' to A,
+        where A is n x n
+
+    Examples
+    --------
+    >>> from fbpca import diffsnorms, eigens
+    >>> from numpy import diag
+    >>> from numpy.random import uniform
+    >>> from scipy.linalg import svd
+    >>>
+    >>> A = uniform(low=-1.0, high=1.0, size=(2, 100))
+    >>> A = A.T.dot(A)
+    >>> (U, s, Va) = svd(A, full_matrices=False)
+    >>> A = A / s[0]
+    >>>
+    >>> (d, V) = eigens(A, 2)
+    >>> err = diffsnorms(A, diag(d), V)
+    >>> print(err)
+
+    This example produces a rank-2 approximation V diag(d) V' to A
+    such that the columns of V are orthonormal, and the entries of d
+    are real-valued and their absolute values are nonincreasing.
+    diffsnorms(A, diag(d), V) outputs an estimate of the spectral norm
+    of A - V diag(d) V', which should be close to the machine
+    precision.
+
+    References
+    ----------
+    .. [EGS] Nathan Halko, Per-Gunnar Martinsson, and Joel Tropp,
+             Finding structure with randomness: probabilistic
+             algorithms for constructing approximate matrix
+             decompositions, arXiv:0909.4061 [math.NA; math.PR], 2009
+             (available at `arXiv <http://arxiv.org/abs/0909.4061>`_).
+
+    See also
+    --------
+    diffsnorms, eigenn, pca
+    """
+
+    if l is None:
+        l = k + 2
+
+    (m, n) = A.shape
+
+    assert m == n
+    assert k > 0
+    assert k <= n
+    assert n_iter >= 0
+    assert l >= k
+
+    if np.isrealobj(A):
+        isreal = True
+    else:
+        isreal = False
+
+    # Promote the types of integer data to float data.
+    dtype = (A * 1.0).dtype
+
+    # Check whether A is self-adjoint to nearly the machine precision.
+    x = np.random.uniform(low=-1.0, high=1.0, size=(n, 1)).astype(dtype)
+    y = mult(A, x)
+    z = mult(x.conj().T, A).conj().T
+    if dtype == 'float16':
+        prec = .1e-1
+    elif dtype in ['float32', 'complex64']:
+        prec = .1e-3
+    else:
+        prec = .1e-11
+    assert (norm(y - z) <= prec * norm(y)) and \
+        (norm(y - z) <= prec * norm(z))
+
+    # Eigendecompose A directly if l >= n/1.25.
+    if l >= n / 1.25:
+        (d, V) = eigh(A.todense() if issparse(A) else A)
+        #
+        # Retain only the entries of d with the k greatest absolute
+        # values and the corresponding columns of V.
+        #
+        idx = abs(d).argsort()[-k:][::-1]
+        return d[idx], V[:, idx]
+
+    # Apply A to a random matrix, obtaining Q.
+    if isreal:
+        Q = np.random.uniform(low=-1.0, high=1.0, size=(n, l)).astype(dtype)
+        Q = mult(A, Q)
+    if not isreal:
+        Q = np.random.uniform(low=-1.0, high=1.0, size=(n, l)).astype(dtype)
+        Q = Q + 1j * np.random.uniform(low=-1.0, high=1.0, size=(n, l)) \
+            .astype(dtype)
+        Q = mult(A, Q)
+
+    # Form a matrix Q whose columns constitute a well-conditioned basis
+    # for the columns of the earlier Q.
+    if n_iter == 0:
+        (Q, _) = qr(Q, mode='economic')
+    if n_iter > 0:
+        (Q, _) = lu(Q, permute_l=True)
+
+    # Conduct normalized power iterations.
+    for it in range(n_iter):
+
+        Q = mult(A, Q)
+
+        if it + 1 < n_iter:
+            (Q, _) = lu(Q, permute_l=True)
+        else:
+            (Q, _) = qr(Q, mode='economic')
+
+    # Eigendecompose Q'*A*Q to obtain approximations to the eigenvalues
+    # and eigenvectors of A.
+    R = Q.conj().T.dot(mult(A, Q))
+    R = (R + R.conj().T) / 2
+    (d, V) = eigh(R)
+    V = Q.dot(V)
+
+    # Retain only the entries of d with the k greatest absolute values
+    # and the corresponding columns of V.
+    idx = abs(d).argsort()[-k:][::-1]
+    return d[idx], V[:, idx]
+    
