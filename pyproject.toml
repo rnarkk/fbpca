@@ -1,0 +1,26 @@
+[project]
+name = "fbpca"
+version = "1.1"
+description = "Fast computations of PCA/SVD/eigendecompositions via randomized methods"
+readme = "README.rst"
+authors = [
+    { name = "Facebook Inc", email = "opensource@fb.com" }
+]
+maintainers = [
+    { email = "rnarkkx@gmail.com" }
+]
+py_modules = ["fbpca"]
+license = { text = 'BSD License }
+classifiers = [
+    "Intended Audience :: Science/Research",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved",
+    "Topic :: Scientific/Engineering",
+    "Programming Language :: Python :: 3',
+]
+dependenties = [
+    
+]
+
+[project.urls]
+repository = "https://github.com/rnarkk/fbpca"
