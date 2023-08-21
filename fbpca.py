@@ -1091,3 +1091,77 @@ def pca(A, k=6, raw=False, n_iter=2, l=None):
             # Retain only the leftmost k columns of U, the uppermost
             # k rows of Va, and the first k entries of s.
             return U[:, :k], s[:k], Va[:k, :]
+
+def mult(A, B):
+    """
+    default matrix multiplication.
+
+    Multiplies A and B together via the "dot" method.
+
+    Parameters
+    ----------
+    A : array_like
+        first matrix in the product A*B being calculated
+    B : array_like
+        second matrix in the product A*B being calculated
+
+    Returns
+    -------
+    array_like
+        product of the inputs A and B
+
+    Examples
+    --------
+    >>> from fbpca import mult
+    >>> from numpy import array
+    >>> from numpy.linalg import norm
+    >>>
+    >>> A = array([[1., 2.], [3., 4.]])
+    >>> B = array([[5., 6.], [7., 8.]])
+    >>> norm(mult(A, B) - A.dot(B))
+
+    This example multiplies two matrices two ways -- once with mult,
+    and once with the usual "dot" method -- and then calculates the
+    (Frobenius) norm of the difference (which should be near 0).
+    """
+
+    if issparse(B) and not issparse(A):
+        # dense.dot(sparse) is not available in scipy.
+        return B.T.dot(A.T).T
+    else:
+        return A.dot(B)
+
+
+def set_matrix_mult(newmult):
+    """
+    re-definition of the matrix multiplication function "mult".
+
+    Sets the matrix multiplication function "mult" used in fbpca to be
+    the input "newmult" -- which must return the product A*B of its two
+    inputs A and B, i.e., newmult(A, B) must be the product of A and B.
+
+    Parameters
+    ----------
+    newmult : callable
+        matrix multiplication replacing mult in fbpca; newmult must
+        return the product of its two array_like inputs
+
+    Returns
+    -------
+    None
+
+    Examples
+    --------
+    >>> from fbpca import set_matrix_mult
+    >>>
+    >>> def newmult(A, B):
+    ...     return A*B
+    ...
+    >>> set_matrix_mult(newmult)
+
+    This example redefines the matrix multiplication used in fbpca to
+    be the entrywise product.
+    """
+
+    global mult
+    mult = newmult
