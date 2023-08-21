@@ -85,9 +85,8 @@ any patent claim of Facebook is invalid or unenforceable.
 
 import logging
 import math
-import unittest
 
-import numpy as np
+import jax.numpy as np
 from scipy.linalg import cholesky, eigh, lu, qr, svd, norm, solve
 from scipy.sparse import coo_matrix, issparse, spdiags
 
@@ -200,9 +199,7 @@ def diffsnorm(A, U, s, Va, n_iter=20):
 
     if m >= n:
 
-        #
         # Generate a random vector x.
-        #
         if isreal:
             x = np.random.normal(size=(n, 1)).astype(dtype)
         else:
@@ -254,3 +251,331 @@ def diffsnorm(A, U, s, Va, n_iter=20):
         snorm = math.sqrt(snorm)
 
     return snorm
+
+
+def diffsnorms(A, S, V, n_iter=20):
+    """
+    2-norm accuracy of a Schur decomp. of a matrix.
+
+    Computes an estimate snorm of the spectral norm (the operator norm
+    induced by the Euclidean vector norm) of A-VSV', using n_iter
+    iterations of the power method started with a random vector;
+    n_iter must be a positive integer.
+
+    Increasing n_iter improves the accuracy of the estimate snorm of
+    the spectral norm of A-VSV'.
+
+    Notes
+    -----
+    To obtain repeatable results, reset the seed for the pseudorandom
+    number generator.
+
+    Parameters
+    ----------
+    A : array_like
+        first matrix in A-VSV' whose spectral norm is being estimated
+    S : array_like
+        third matrix in A-VSV' whose spectral norm is being estimated
+    V : array_like
+        second matrix in A-VSV' whose spectral norm is being estimated
+    n_iter : int, optional
+        number of iterations of the power method to conduct;
+        n_iter must be a positive integer, and defaults to 20
+
+    Returns
+    -------
+    float
+        an estimate of the spectral norm of A-VSV' (the estimate fails
+        to be accurate with exponentially low probability as n_iter
+        increases; see references DS1_, DS2_, and DS3_ below)
+
+    Examples
+    --------
+    >>> from fbpca import diffsnorms, eigenn
+    >>> from numpy import diag
+    >>> from numpy.random import uniform
+    >>> from scipy.linalg import svd
+    >>>
+    >>> A = uniform(low=-1.0, high=1.0, size=(2, 100))
+    >>> A = A.T.dot(A)
+    >>> (U, s, Va) = svd(A, full_matrices=False)
+    >>> A = A / s[0]
+    >>>
+    >>> (d, V) = eigenn(A, 2)
+    >>> err = diffsnorms(A, diag(d), V)
+    >>> print(err)
+
+    This example produces a rank-2 approximation V diag(d) V' to A
+    such that the columns of V are orthonormal and the entries of d
+    are nonnegative and are nonincreasing.
+    diffsnorms(A, diag(d), V) outputs an estimate of the spectral norm
+    of A - V diag(d) V', which should be close to the machine
+    precision.
+
+    References
+    ----------
+    .. [DS1] Jacek Kuczynski and Henryk Wozniakowski, Estimating the
+             largest eigenvalues by the power and Lanczos methods with
+             a random start, SIAM Journal on Matrix Analysis and
+             Applications, 13 (4): 1094-1122, 1992.
+    .. [DS2] Edo Liberty, Franco Woolfe, Per-Gunnar Martinsson,
+             Vladimir Rokhlin, and Mark Tygert, Randomized algorithms
+             for the low-rank approximation of matrices, Proceedings of
+             the National Academy of Sciences (USA), 104 (51):
+             20167-20172, 2007. (See the appendix.)
+    .. [DS3] Franco Woolfe, Edo Liberty, Vladimir Rokhlin, and Mark
+             Tygert, A fast randomized algorithm for the approximation
+             of matrices, Applied and Computational Harmonic Analysis,
+             25 (3): 335-366, 2008. (See Section 3.4.)
+
+    See also
+    --------
+    eigenn, eigens
+    """
+
+    (m, n) = A.shape
+    (m2, k) = V.shape
+    (k2, k3) = S.shape
+
+    assert m == n
+    assert m == m2
+    assert k == k2
+    assert k2 == k3
+
+    assert n_iter >= 1
+
+    if np.isrealobj(A) and np.isrealobj(V) and np.isrealobj(S):
+        isreal = True
+    else:
+        isreal = False
+
+    # Promote the types of integer data to float data.
+    dtype = (A * 1.0).dtype
+
+    # Generate a random vector x.
+    if isreal:
+        x = np.random.normal(size=(n, 1)).astype(dtype)
+    else:
+        x = np.random.normal(size=(n, 1)).astype(dtype) \
+            + 1j * np.random.normal(size=(n, 1)).astype(dtype)
+
+    x = x / norm(x)
+
+    # Run n_iter iterations of the power method.
+    for it in range(n_iter):
+        # Set y = (A-VSV')x.
+        y = mult(A, x) - V.dot(S.dot(V.conj().T.dot(x)))
+        # Set x = (A'-VS'V')y.
+        x = mult(y.conj().T, A).conj().T \
+            - V.dot(S.conj().T.dot(V.conj().T.dot(y)))
+
+        # Normalise x, memorising its Euclidean norm.
+        snorm = norm(x)
+        if snorm == 0:
+            return 0
+        x = x / snorm
+
+    snorm = math.sqrt(snorm)
+
+    return snorm
+
+def eigenn(A, k=6, n_iter=4, l=None):
+    """
+    Eigendecomposition of a NONNEGATIVE-DEFINITE matrix.
+
+    Constructs a nearly optimal rank-k approximation V diag(d) V' to a
+    NONNEGATIVE-DEFINITE matrix A, using n_iter normalized power
+    iterations, with block size l, started with an n x l random matrix,
+    when A is n x n; the reference EGN_ below explains "nearly
+    optimal." k must be a positive integer <= the dimension n of A,
+    n_iter must be a nonnegative integer, and l must be a positive
+    integer >= k.
+
+    The rank-k approximation V diag(d) V' comes in the form of an
+    eigendecomposition -- the columns of V are orthonormal and d is a
+    real vector such that its entries are nonnegative and nonincreasing.
+    V is n x k and len(d) = k, when A is n x n.
+
+    Increasing n_iter or l improves the accuracy of the approximation
+    V diag(d) V'; the reference EGN_ below describes how the accuracy
+    depends on n_iter and l. Please note that even n_iter=1 guarantees
+    superb accuracy, whether or not there is any gap in the singular
+    values of the matrix A being approximated, at least when measuring
+    accuracy as the spectral norm || A - V diag(d) V' || of the matrix
+    A - V diag(d) V' (relative to the spectral norm ||A|| of A).
+
+    Notes
+    -----
+    THE MATRIX A MUST BE SELF-ADJOINT AND NONNEGATIVE DEFINITE.
+
+    To obtain repeatable results, reset the seed for the pseudorandom
+    number generator.
+
+    The user may ascertain the accuracy of the approximation
+    V diag(d) V' to A by invoking diffsnorms(A, numpy.diag(d), V).
+
+    Parameters
+    ----------
+    A : array_like, shape (n, n)
+        matrix being approximated
+    k : int, optional
+        rank of the approximation being constructed;
+        k must be a positive integer <= the dimension of A, and
+        defaults to 6
+    n_iter : int, optional
+        number of normalized power iterations to conduct;
+        n_iter must be a nonnegative integer, and defaults to 4
+    l : int, optional
+        block size of the normalized power iterations;
+        l must be a positive integer >= k, and defaults to k+2
+
+    Returns
+    -------
+    d : ndarray, shape (k,)
+        vector of length k in the rank-k approximation V diag(d) V'
+        to A, such that its entries are nonnegative and nonincreasing
+    V : ndarray, shape (n, k)
+        n x k matrix in the rank-k approximation V diag(d) V' to A,
+        where A is n x n
+
+    Examples
+    --------
+    >>> from fbpca import diffsnorms, eigenn
+    >>> from numpy import diag
+    >>> from numpy.random import uniform
+    >>> from scipy.linalg import svd
+    >>>
+    >>> A = uniform(low=-1.0, high=1.0, size=(2, 100))
+    >>> A = A.T.dot(A)
+    >>> (U, s, Va) = svd(A, full_matrices=False)
+    >>> A = A / s[0]
+    >>>
+    >>> (d, V) = eigenn(A, 2)
+    >>> err = diffsnorms(A, diag(d), V)
+    >>> print(err)
+
+    This example produces a rank-2 approximation V diag(d) V' to A
+    such that the columns of V are orthonormal and the entries of d
+    are nonnegative and nonincreasing.
+    diffsnorms(A, diag(d), V) outputs an estimate of the spectral norm
+    of A - V diag(d) V', which should be close to the machine
+    precision.
+
+    References
+    ----------
+    .. [EGN] Nathan Halko, Per-Gunnar Martinsson, and Joel Tropp,
+             Finding structure with randomness: probabilistic
+             algorithms for constructing approximate matrix
+             decompositions, arXiv:0909.4061 [math.NA; math.PR], 2009
+             (available at `arXiv <http://arxiv.org/abs/0909.4061>`_).
+
+    See also
+    --------
+    diffsnorms, eigens, pca
+    """
+
+    if l is None:
+        l = k + 2
+
+    (m, n) = A.shape
+
+    assert m == n
+    assert k > 0
+    assert k <= n
+    assert n_iter >= 0
+    assert l >= k
+
+    if np.isrealobj(A):
+        isreal = True
+    else:
+        isreal = False
+
+    # Promote the types of integer data to float data.
+    dtype = (A * 1.0).dtype
+
+    # Check whether A is self-adjoint to nearly the machine precision.
+    x = np.random.uniform(low=-1.0, high=1.0, size=(n, 1)).astype(dtype)
+    y = mult(A, x)
+    z = mult(x.conj().T, A).conj().T
+    if dtype == 'float16':
+        prec = .1e-1
+    elif dtype in ['float32', 'complex64']:
+        prec = .1e-3
+    else:
+        prec = .1e-11
+    assert (norm(y - z) <= prec * norm(y)) and \
+        (norm(y - z) <= prec * norm(z))
+
+    # Eigendecompose A directly if l >= n/1.25.
+    if l >= n / 1.25:
+        (d, V) = eigh(A.todense() if issparse(A) else A)
+        #
+        # Retain only the entries of d with the k greatest absolute
+        # values and the corresponding columns of V.
+        #
+        idx = abs(d).argsort()[-k:][::-1]
+        return abs(d[idx]), V[:, idx]
+
+    # Apply A to a random matrix, obtaining Q.
+    if isreal:
+        R = np.random.uniform(low=-1.0, high=1.0, size=(n, l)).astype(dtype)
+    if not isreal:
+        R = np.random.uniform(low=-1.0, high=1.0, size=(n, l)).astype(dtype)
+        R += 1j * np.random.uniform(low=-1.0, high=1.0, size=(n, l)) \
+            .astype(dtype)
+
+    Q = mult(A, R)
+
+    # Form a matrix Q whose columns constitute a well-conditioned basis
+    # for the columns of the earlier Q.
+    if n_iter == 0:
+
+        anorm = 0
+        for j in range(l):
+            anorm = max(anorm, norm(Q[:, j]) / norm(R[:, j]))
+
+        (Q, _) = qr(Q, mode='economic')
+
+    if n_iter > 0:
+
+        (Q, _) = lu(Q, permute_l=True)
+
+    # Conduct normalized power iterations.
+    for it in range(n_iter):
+
+        cnorm = np.zeros((l), dtype=dtype)
+        for j in range(l):
+            cnorm[j] = norm(Q[:, j])
+
+        Q = mult(A, Q)
+
+        if it + 1 < n_iter:
+
+            (Q, _) = lu(Q, permute_l=True)
+
+        else:
+
+            anorm = 0
+            for j in range(l):
+                anorm = max(anorm, norm(Q[:, j]) / cnorm[j])
+
+            (Q, _) = qr(Q, mode='economic')
+
+    # Use the Nystrom method to obtain approximations to the
+    # eigenvalues and eigenvectors of A (shifting A on the subspace
+    # spanned by the columns of Q in order to make the shifted A be
+    # positive definite). An alternative is to use the (symmetric)
+    # square root in place of the Cholesky factor of the shift.
+    anorm = .1e-6 * anorm * math.sqrt(1. * n)
+    E = mult(A, Q) + anorm * Q
+    R = Q.conj().T.dot(E)
+    R = (R + R.conj().T) / 2
+    R = cholesky(R, lower=True)
+    (E, d, V) = svd(solve(R, E.conj().T), full_matrices=False)
+    V = V.conj().T
+    d = d * d - anorm
+
+    # Retain only the entries of d with the k greatest absolute values
+    # and the corresponding columns of V.
+    idx = abs(d).argsort()[-k:][::-1]
+    return abs(d[idx]), V[:, idx]
