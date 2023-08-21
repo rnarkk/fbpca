@@ -86,6 +86,7 @@ any patent claim of Facebook is invalid or unenforceable.
 import logging
 import math
 
+from jax import random
 import jax.numpy as np
 from scipy.linalg import cholesky, eigh, lu, qr, svd, norm, solve
 from scipy.sparse import coo_matrix, issparse, spdiags
